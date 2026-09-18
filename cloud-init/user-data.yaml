@@ -1,0 +1,57 @@
+#cloud-config
+# adsb-node-bootstrap — cloud-init template
+# For Raspberry Pi Imager: save as 'user-data' on the boot partition
+# For cloud VMs: paste into the user-data field
+#
+# Edit the variables below, then boot. The node configures itself.
+
+hostname: adsb-node
+
+users:
+  - name: adsb
+    groups: [sudo, dialout, plugdev]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    # Replace with your hashed password (generate with: mkpasswd -m sha-512)
+    passwd: "$6$CHANGE_ME$CHANGE_ME_HASH_HERE"
+    ssh_authorized_keys:
+      - "ssh-ed25519 AAAA... your-key-here"
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /opt/adsb-bootstrap/config.env
+    permissions: "0644"
+    content: |
+      # === Edit these values ===
+      LATITUDE=""
+      LONGITUDE=""
+      ALTITUDE_FT=""
+      MLAT_SITE_NAME="adsb-node"
+
+      FEED_ADSBLOL="yes"
+      FEED_FLIGHTAWARE="yes"
+      FEED_ADSBFI="yes"
+      FEED_ADSBX="yes"
+      FEED_AIRPLANESLIVE="yes"
+      FEED_OPENSKY="no"
+      ENABLE_MLAT="yes"
+
+      NODE_USER="adsb"
+      SKIP_SYSTEM_UPDATE="yes"
+
+runcmd:
+  - |
+    cd /opt/adsb-bootstrap
+    curl -sL https://raw.githubusercontent.com/hank19CH/adsb-node-bootstrap/main/bootstrap.sh -o bootstrap.sh
+    chmod +x bootstrap.sh
+    ./bootstrap.sh --config /opt/adsb-bootstrap/config.env
+
+final_message: "adsb-node-bootstrap complete. Check /var/log/adsb-bootstrap.log"
