@@ -50,6 +50,17 @@ BEAST_BIND_PORT="${BEAST_BIND_PORT:-30005}"
 SKIP_SYSTEM_UPDATE="${SKIP_SYSTEM_UPDATE:-no}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-no}"
 LOG_FILE="${LOG_FILE:-/var/log/adsb-bootstrap.log}"
+RESTORE_UUIDS="${RESTORE_UUIDS:-}"
+
+# Feeder identities (from --restore-uuids / uuids.env) — see README "Reimaging"
+ADSBLOL_UUID="${ADSBLOL_UUID:-}"
+ADSBFI_UUID="${ADSBFI_UUID:-}"
+ADSBX_UUID="${ADSBX_UUID:-}"
+AIRPLANES_UUID="${AIRPLANES_UUID:-}"
+FLIGHTAWARE_FEEDER_ID="${FLIGHTAWARE_FEEDER_ID:-}"
+OPENSKY_SERIAL="${OPENSKY_SERIAL:-}"
+FR24_KEY="${FR24_KEY:-}"
+UUID_RE='^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$'
 
 NON_INTERACTIVE=false
 CONFIG_FILE=""
@@ -202,6 +213,62 @@ run_installer_script() {
             return 0
         }
     fi
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# Feeder identity restore (reimaging)
+#
+# Every aggregator identifies a station by a UUID/key kept in a file
+# on the node. Restore those before the feeders install and a
+# reimaged machine carries on as the same station with its history.
+# The four readsb feeders' create-uuid.sh reuse an existing valid
+# <feed>-uuid file, so restore = write the file before update.sh.
+# ═══════════════════════════════════════════════════════════════════
+load_restore_uuids() {
+    if [[ -z "$RESTORE_UUIDS" && -f /boot/firmware/adsb-uuids.env ]]; then
+        RESTORE_UUIDS=/boot/firmware/adsb-uuids.env
+    fi
+    [[ -n "$RESTORE_UUIDS" ]] || return 0
+    [[ -f "$RESTORE_UUIDS" ]] || die "--restore-uuids file not found: $RESTORE_UUIDS"
+    banner "Restoring feeder identities from $RESTORE_UUIDS"
+    # shellcheck disable=SC1090
+    set -a; source "$RESTORE_UUIDS"; set +a
+    for v in ADSBLOL_UUID ADSBFI_UUID ADSBX_UUID AIRPLANES_UUID FLIGHTAWARE_FEEDER_ID OPENSKY_SERIAL FR24_KEY; do
+        [[ -n "${!v}" ]] && log "  $v: set"
+    done
+}
+
+# restore_feeder_uuid <label> <uuid-file> <uuid> — no-op when uuid is empty
+restore_feeder_uuid() {
+    local label="$1" file="$2" uuid="$3"
+    [[ -n "$uuid" ]] || return 0
+    if [[ ! "$uuid" =~ $UUID_RE ]]; then
+        warn "$label UUID is not a valid UUID — ignoring"
+        return 0
+    fi
+    mkdir -p "$(dirname "$file")"
+    echo "$uuid" > "$file"
+    log "$label: restored identity → $file"
+}
+
+# Snapshot every identity into one uuids.env-format file for safekeeping
+uuid_from_file() { [[ -f "$1" ]] && tr -d '[:space:]' < "$1" || true; }
+capture_uuids() {
+    local out=/etc/adsb-node-uuids.env
+    cat > "$out" <<UUIDS
+# Feeder identities for $(hostname) — captured $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Restore on a reimaged node with: bootstrap.sh --restore-uuids <this file>
+# or copy it to the SD boot partition as adsb-uuids.env before first boot.
+ADSBLOL_UUID="$(uuid_from_file /usr/local/share/adsblol/adsblol-uuid)"
+ADSBFI_UUID="$(uuid_from_file /usr/local/share/adsbfi/adsbfi-uuid)"
+ADSBX_UUID="$(uuid_from_file /usr/local/share/adsbexchange/adsbx-uuid)"
+AIRPLANES_UUID="$(uuid_from_file /usr/local/share/airplanes/airplanes-uuid)"
+FLIGHTAWARE_FEEDER_ID="$(piaware-config -show feeder-id 2>/dev/null || uuid_from_file /var/cache/piaware/feeder_id)"
+OPENSKY_SERIAL="$(grep -hsi '^Serial=' /var/lib/openskyd/conf.d/*.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]')"
+FR24_KEY="$(grep -s '^fr24key=' /etc/fr24feed.ini 2>/dev/null | cut -d= -f2- | tr -d '"[:space:]')"
+UUIDS
+    chmod 600 "$out"
+    log "Feeder identities saved to $out — keep a copy off the node (FlightAware/OpenSky ids may fill in after first connect)"
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -534,6 +601,7 @@ install_feed_adsblol() {
         "feed.adsb.lol:31090" \
         "--net-connector feed.adsb.lol,30004,beast_reduce_plus_out,feed2.adsb.lol,1337" \
         "--net-heartbeat 60 --net-ro-size 1280 --net-ro-interval=0.05 --net-ro-interval-beast-reduce=0.12 --net-ro-port 0 --net-sbs-port 0 --net-bi-port 31421 --net-bo-port 0 --net-ri-port 0 --write-json-every 1"
+    restore_feeder_uuid "adsb.lol" /usr/local/share/adsblol/adsblol-uuid "$ADSBLOL_UUID"
     install_readsb_feeder "adsb.lol" /usr/local/share/adsblol \
         https://github.com/adsblol/feed.git master adsblol
 }
@@ -550,6 +618,7 @@ install_feed_adsbfi() {
         "feed.adsb.fi:31090" \
         "--net-connector feed.adsb.fi,30004,beast_reduce_plus_out,feed.adsb.fi,64004" \
         "--net-heartbeat 60 --net-ro-size 1280 --net-ro-interval 0.2 --net-ro-port 0 --net-sbs-port 0 --net-bi-port 30169 --net-bo-port 0 --net-ri-port 0 --write-json-every 1 --uuid-file /usr/local/share/adsbfi/adsbfi-uuid"
+    restore_feeder_uuid "adsb.fi" /usr/local/share/adsbfi/adsbfi-uuid "$ADSBFI_UUID"
     install_readsb_feeder "adsb.fi" /usr/local/share/adsbfi \
         https://github.com/adsbfi/adsb-fi-scripts.git master adsbfi
 }
@@ -566,6 +635,7 @@ install_feed_adsbx() {
         "feed.adsbexchange.com:31090" \
         "--net-connector feed1.adsbexchange.com,30004,beast_reduce_out,feed2.adsbexchange.com,64004" \
         "--net-heartbeat 60 --net-ro-size 1280 --net-ro-interval 0.2 --net-ro-port 0 --net-sbs-port 0 --net-bi-port 30154 --net-bo-port 0 --net-ri-port 0 --write-json-every 1"
+    restore_feeder_uuid "ADS-B Exchange" /usr/local/share/adsbexchange/adsbx-uuid "$ADSBX_UUID"
     install_readsb_feeder "ADS-B Exchange" /usr/local/share/adsbexchange \
         https://github.com/adsbexchange/feedclient.git master adsbexchange
 }
@@ -583,6 +653,7 @@ install_feed_airplaneslive() {
         "feed.airplanes.live:31090" \
         "--net-connector feed.airplanes.live,30004,beast_reduce_plus_out,feed.airplanes.live,64004" \
         "--net-heartbeat 60 --net-ro-size 1280 --net-ro-interval 0.2 --net-ro-port 0 --net-sbs-port 0 --net-bi-port 30187 --net-bo-port 0 --net-ri-port 0 --write-json-every 1 --uuid-file /usr/local/share/airplanes/airplanes-uuid"
+    restore_feeder_uuid "airplanes.live" /usr/local/share/airplanes/airplanes-uuid "$AIRPLANES_UUID"
     install_readsb_feeder "airplanes.live" /usr/local/share/airplanes \
         https://github.com/airplanes-live/feed.git main airplanes
 }
@@ -619,6 +690,14 @@ install_feed_flightaware() {
         piaware-config allow-auto-updates yes
         piaware-config allow-manual-updates yes
         piaware-config allow-mlat "$(is_yes "$ENABLE_MLAT" && echo yes || echo no)"
+        if [[ -n "$FLIGHTAWARE_FEEDER_ID" ]]; then
+            if [[ "$FLIGHTAWARE_FEEDER_ID" =~ $UUID_RE ]]; then
+                piaware-config feeder-id "$FLIGHTAWARE_FEEDER_ID"
+                log "FlightAware: restored feeder-id"
+            else
+                warn "FLIGHTAWARE_FEEDER_ID is not a valid UUID — ignoring"
+            fi
+        fi
         systemctl enable piaware 2>/dev/null || true
         systemctl restart piaware 2>/dev/null || true
         log "PiAware: $(systemctl is-active piaware 2>/dev/null || echo 'not running') — claim at https://flightaware.com/adsb/piaware/claim"
@@ -668,7 +747,7 @@ opensky-feeder openskyd/longitude string ${LONGITUDE}
 opensky-feeder openskyd/altitude string ${ALTITUDE_M}
 opensky-feeder openskyd/dump1090branch select default
 opensky-feeder openskyd/username string ${OPENSKY_USERNAME}
-opensky-feeder openskyd/serial string
+opensky-feeder openskyd/serial string ${OPENSKY_SERIAL}
 opensky-feeder openskyd/host string localhost
 opensky-feeder openskyd/port string ${BEAST_BIND_PORT}
 OSKSEED
@@ -691,6 +770,25 @@ install_feed_fr24() {
 
     if command -v fr24feed &>/dev/null; then
         log "fr24feed already installed — skipping"
+        return 0
+    fi
+    if [[ -n "$FR24_KEY" ]]; then
+        # A saved sharing key means no signup is needed. Their installer may
+        # still stop at its signup step when unattended (harmless); the ini
+        # written below is what fr24feed actually reads.
+        run_installer_script "https://repo-feed.flightradar24.com/install_fr24_rpi.sh" "fr24" || true
+        cat > /etc/fr24feed.ini <<FR24INI
+receiver="beast-tcp"
+fr24key="${FR24_KEY}"
+host="127.0.0.1:${BEAST_BIND_PORT}"
+bs="no"
+raw="no"
+logmode="0"
+mlat="yes"
+mlat-without-gps="yes"
+FR24INI
+        systemctl restart fr24feed 2>/dev/null || true
+        log "FR24: restored sharing key"
         return 0
     fi
     if $NON_INTERACTIVE; then
@@ -752,6 +850,7 @@ print_summary() {
     echo "    systemctl status adsblol-feed adsbfi-feed adsbexchange-feed airplanes-feed piaware opensky-feeder"
     echo "    jq '.last1min.messages, .last1min.tracks.all' /run/readsb/stats.json"
     echo "  Log:       ${LOG_FILE}"
+    echo "  Identity:  /etc/adsb-node-uuids.env  (back this up — restores the station on a reimage)"
     echo ""
     log "Done. Reboot recommended if this is a first install."
 }
@@ -770,8 +869,9 @@ main() {
             --config)          CONFIG_FILE="$2"; shift 2 ;;
             --non-interactive) NON_INTERACTIVE=true; shift ;;
             --force)           FORCE_REINSTALL=yes; shift ;;
+            --restore-uuids)   RESTORE_UUIDS="$2"; shift 2 ;;
             --help|-h)
-                echo "Usage: sudo ./bootstrap.sh [--config config.env] [--non-interactive] [--force]"
+                echo "Usage: sudo ./bootstrap.sh [--config config.env] [--non-interactive] [--force] [--restore-uuids uuids.env]"
                 exit 0 ;;
             *) die "Unknown argument: $1" ;;
         esac
@@ -795,6 +895,7 @@ main() {
     detect_os
     detect_gcc_version
 
+    load_restore_uuids
     prompt_config
     validate_config
 
@@ -816,6 +917,7 @@ main() {
     install_feed_fr24
 
     remove_werror_fix
+    capture_uuids
 
     print_summary
     echo "=== adsb-node-bootstrap finished: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

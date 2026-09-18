@@ -96,6 +96,30 @@ Fixing the spinner alone just moves the error to `uat2esnt/uat_decode.c` (`base4
 
 Until those PRs merge, this toolkit puts `cc`/`gcc`/`g++` wrappers on `PATH` during feed installation that strip a standalone `-Werror` (preserving `-Werror=<specific>` flags like `-Werror=format-security`), then removes them. No source patches, no forks. Only active when the host GCC is ≥ 15.
 
+## Reimaging without losing your station
+
+Every aggregator identifies your station by a UUID or key kept in a file on the node. Lose the SD card and you start over as a new station — unless you restore those first. The bootstrap saves them all to **`/etc/adsb-node-uuids.env`** at the end of every run:
+
+```bash
+# Feeder identities for my-node — captured 2026-09-18T12:00:00Z
+ADSBLOL_UUID="…"             # /usr/local/share/adsblol/adsblol-uuid
+ADSBFI_UUID="…"              # /usr/local/share/adsbfi/adsbfi-uuid
+ADSBX_UUID="…"               # /usr/local/share/adsbexchange/adsbx-uuid
+AIRPLANES_UUID="…"           # /usr/local/share/airplanes/airplanes-uuid
+FLIGHTAWARE_FEEDER_ID="…"    # piaware-config feeder-id (assigned by FA on first connect)
+OPENSKY_SERIAL="…"           # /var/lib/openskyd/conf.d/*.conf (assigned on first connect)
+FR24_KEY="…"                 # /etc/fr24feed.ini fr24key=
+```
+
+Copy that file somewhere safe (a private git repo, a password manager). FlightAware and OpenSky assign their ids on first connect, so re-copy it after the node has been feeding for a while.
+
+To bring a reimaged node back as the same station, either:
+
+- drop the file on the SD card's `system-boot` partition as **`adsb-uuids.env`** next to `user-data` — the bootstrap auto-detects it, or
+- pass it explicitly: `sudo ./bootstrap.sh --config config.env --restore-uuids uuids.env`
+
+Empty values are skipped (that feeder gets a fresh identity); malformed UUIDs are rejected with a warning. The four readsb feeders reuse an existing valid `<feed>-uuid` file rather than generating one, FlightAware is set with `piaware-config feeder-id`, OpenSky via the `openskyd/serial` debconf answer, and FR24 by writing its ini.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -121,6 +145,7 @@ Until those PRs merge, this toolkit puts `cc`/`gcc`/`g++` wrappers on `PATH` dur
 | `READSB_GAIN` | `-10` | SDR gain (-10 = AGC) |
 | `SKIP_SYSTEM_UPDATE` | `no` | Skip apt update/upgrade on re-runs |
 | `FORCE_REINSTALL` | `no` | Rebuild feeds that are already running (or pass `--force`) |
+| `RESTORE_UUIDS` | *(auto)* | Path to a saved `uuids.env` (or pass `--restore-uuids`); auto-detects `/boot/firmware/adsb-uuids.env` |
 
 See [`config.env.example`](config.env.example) for the full list.
 
@@ -136,6 +161,7 @@ See [`config.env.example`](config.env.example) for the full list.
 - **tar1090 map**: `http://<node-ip>/tar1090`
 - **FlightAware claim**: If you enabled PiAware, visit [flightaware.com/adsb/piaware/claim](https://flightaware.com/adsb/piaware/claim) to link your station
 - **OpenSky**: register at [opensky-network.org/my-opensky](https://opensky-network.org/my-opensky)
+- **Back up your station identity**: copy `/etc/adsb-node-uuids.env` off the node (see [Reimaging](#reimaging-without-losing-your-station))
 - **Verify feeds**:
 
 ```bash
